@@ -1,0 +1,295 @@
+from fastapi import APIRouter, HTTPException, Header
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
+from bson import ObjectId
+import json
+import datetime
+import re
+
+from config.database import db
+from utils.pii_masking import mask_pii
+from utils.gemini_ai import get_emotional_response
+from utils.jwt_handler import decode_token
+from utils.behavior_tracking import analyze_user_behavior
+from utils.memory_engine import analyze_user_history
+
+router = APIRouter(prefix="/chat", tags=["Chat"])
+
+# ── Models ─────────────────────────
+class ChatMessage(BaseModel):
+    message: str
+    session_id: Optional[str] = "default"
+    ghost_mode: bool = False
+    input_type: str = "text"
+
+
+# ── Model for Privacy Update ──
+class PrivacyUpdate(BaseModel):
+    chat_id: str
+    is_private: bool
+
+
+# ── HELPER: Get stress score from level ─────────────────────────
+def map_stress_level(level: str) -> int:
+    mapping = {"low": 30, "medium": 60, "high": 85}
+    return mapping.get(level.lower(), 30)
+
+
+# ── HELPER: Get user from token ─────────────────────────
+def get_user_from_token(authorization: str):
+    if not authorization or authorization.endswith("null"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        payload = decode_token(token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    return payload
+
+
+# ── SEND MESSAGE ─────────────────────────
+@router.post("/message")
+def send_message(
+    data: ChatMessage,
+    authorization: Optional[str] = Header(None)
+):
+    user = get_user_from_token(authorization)
+    user_id = user.get("user_id")
+
+    # 🔴 STEP 1: DEFINE SAFE DEFAULTS (TOP OF FUNCTION)
+    ai_response = {
+        "message": "I'm here for you. 💙",
+        "stress_level": "low",
+        "burnout_score": 20,
+        "emotion": "neutral",
+        "suggestion": "Take a moment to breathe.",
+        "actions": [],
+        "intent": "normal"
+    }
+    ai_message = ai_response["message"]
+    summary = {"trend": "stable", "avg_stress": 20, "max_stress": 20}
+    stress_history = []
+    emergency = False
+    
+    # Step 1: Mask PII (privacy)
+    masked_message = mask_pii(data.message)
+    user_msg_lower = data.message.lower().strip()
+    
+    # 🔴 STEP 2: DETECT RECOVERY FIRST (HIGHEST PRIORITY)
+    recovery_phrases = [
+        "i feel better", "i feel a bit better", "i am better",
+        "i am okay", "i am fine", "things are improving", "i feel relaxed"
+    ]
+    recovery = any(p in user_msg_lower for p in recovery_phrases)
+
+    # 🔴 STEP 3: APPLY HARD RECOVERY RESET
+    if recovery:
+        emergency = False
+        ai_response["emotion"] = "calmness"
+        ai_response["stress_level"] = "low"
+        ai_response["burnout_score"] = 25
+        ai_response["message"] = "I'm really glad to hear that you're feeling better. That's a positive step forward 💙"
+        ai_message = ai_response["message"]
+    
+    # Step 2: Fetch Context & History for patterns
+    chats = db["chats"]
+    stress_logs = db["stress_logs"]
+    
+    # Fetch historical stress data (needed for summary/trend)
+    past_messages = list(chats.find({"user_id": user_id}).sort("created_at", -1).limit(10))
+    stress_history = [m.get("score", 0) for m in reversed(past_messages)]
+    
+    # Step 3: Behavior & Memory Analysis
+    behavior_summary = analyze_user_behavior(user_id, masked_message)
+    user_history_raw = list(chats.find({"user_id": user_id}).sort("created_at", -1).limit(20))
+    pattern_summary = analyze_user_history(user_history_raw)
+    
+    # 🔴 STEP 4: GEMINI CALL (SAFE)
+    try:
+        gemini_output = get_emotional_response(
+            user_message=masked_message,
+            history_summary="",
+            recent_stress_levels=[],
+            input_type=data.input_type,
+            behavior_summary=behavior_summary,
+            pattern_summary=pattern_summary
+        )
+        if gemini_output:
+            ai_response.update(gemini_output)
+            ai_message = ai_response.get("message", ai_message)
+    except Exception as e:
+        print(f"!!! GEMINI API ERROR !!!: {e}")
+        # fallback already defined in STEP 1
+    
+    # 🚨 EMERGENCY DETECTION & PRIORITY LOGIC (Robust Suicide/Self-Harm Detection)
+    user_text = re.sub(r'[^\w\s]', '', data.message.lower()).strip()
+    
+    # 🔴 HIGH RISK KEYWORDS (single words)
+    high_risk_keywords = [
+        "suicide", "die", "dead", "dying",
+        "kill myself", "end my life",
+        "no reason to live", "worthless",
+        "hopeless", "give up"
+    ]
+
+    # 🔴 HIGH RISK PHRASES (strong signals)
+    high_risk_phrases = [
+        "i want to die", "i want to suicide", "i feel like dying",
+        "i am done with life", "i cant go on", "i cannot go on",
+        "i wish i was dead", "i dont want to live"
+    ]
+    
+    keyword_flag = any(word in user_text for word in high_risk_keywords)
+    phrase_flag = any(phrase in user_text for phrase in high_risk_phrases)
+    emergency = keyword_flag or phrase_flag
+    
+    if emergency:
+        print(f"🚨 EMERGENCY DETECTED | Keyword: {keyword_flag} | Phrase: {phrase_flag}")
+
+    # 🔴 FINAL SAFETY OVERRIDE (FIXED CONDITION)
+    if emergency and not recovery:
+        ai_response["emotion"] = "stress"
+        ai_response["stress_level"] = "high"
+        ai_response["burnout_score"] = max(ai_response.get("burnout_score", 0), 90)
+        
+        ai_response["message"] = (
+            "I'm really concerned about you. It sounds like you're going through something very overwhelming. "
+            "You are not alone in this. Please try to reach out to someone you trust right now. "
+            "If possible, contact a mental health helpline immediately."
+        )
+        ai_message = ai_response["message"]
+
+    # Calculate summary based on final score
+    final_score = ai_response.get("burnout_score", 20)
+    all_scores = stress_history + [final_score]
+    summary = {
+        "avg_stress": sum(all_scores) / len(all_scores),
+        "max_stress": max(all_scores),
+        "trend": "increasing" if final_score > (stress_history[0] if stress_history else final_score) else "decreasing" if final_score < (stress_history[0] if stress_history else final_score) else "stable"
+    }
+
+    # Final DB Update (Persistence)
+    if not data.ghost_mode:
+        db.chats.insert_one({
+            "user_id": user_id,
+            "session_id": data.session_id,
+            "user_message": data.message,
+            "masked_message": masked_message,
+            "ai_response": ai_message,
+            "emotion": ai_response.get("emotion", "neutral"),
+            "score": final_score,
+            "stress_level": ai_response.get("stress_level", "low"),
+            "emergency": bool(emergency),
+            "is_private": False,
+            "created_at": datetime.datetime.utcnow()
+        })
+
+    # 🔴 STEP 7: FINAL SAFE RETURN (NO CRASH GUARANTEED)
+    return JSONResponse(
+        content={
+            "message": ai_message,
+            "stress_level": ai_response.get("stress_level", "low"),
+            "indicator": {
+                "low": ai_response.get("stress_level", "low").lower() == "low",
+                "medium": ai_response.get("stress_level", "low").lower() == "medium",
+                "high": ai_response.get("stress_level", "low").lower() == "high"
+            },
+            "suggestion": ai_response.get("suggestion", ""),
+            "actions": ai_response.get("actions", []),
+            "emotion": ai_response.get("emotion", "neutral"),
+            "burnout_score": final_score,
+            "intent": ai_response.get("intent", "normal"),
+            "emergency": bool(emergency),
+            "trend": summary.get("trend", "stable"),
+            "summary": summary,
+            "history": stress_history,
+            "masked_message": masked_message
+        }
+    )
+
+
+# ── UPDATE PRIVACY ─────────────────────────
+@router.put("/privacy")
+def update_privacy(
+    data: PrivacyUpdate,
+    authorization: Optional[str] = Header(None)
+):
+    user = get_user_from_token(authorization)
+    user_id = user.get("user_id")
+    
+    chats = db["chats"]
+    result = chats.update_one(
+        {"user_id": user_id, "_id": ObjectId(data.chat_id)},
+        {"$set": {"is_private": data.is_private}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Chat message not found")
+    
+    return {"message": "Privacy status updated"}
+
+
+# ── GET CHAT HISTORY ─────────────────────────
+@router.get("/history")
+def get_chat_history(
+    session_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None)
+):
+    user = get_user_from_token(authorization)
+    user_id = user.get("user_id")
+    
+    query = {"user_id": user_id}
+    if session_id:
+        query["session_id"] = session_id
+        
+    chats = db["chats"]
+    user_chats = list(chats.find(query).sort("created_at", -1).limit(50))
+    
+    # Map _id to string for JSON serialization
+    for chat in user_chats:
+        chat["chat_id"] = str(chat["_id"])
+        del chat["_id"]
+        del chat["user_id"]
+    
+    return {"messages": user_chats}
+
+
+# ── CLEAR CHAT HISTORY ─────────────────────────
+@router.delete("/history")
+def clear_chat_history(authorization: Optional[str] = Header(None)):
+    user = get_user_from_token(authorization)
+    user_id = user.get("user_id")
+    
+    chats = db["chats"]
+    result = chats.delete_many({"user_id": user_id})
+    
+    return {
+        "message": "Chat history cleared",
+        "deleted_count": result.deleted_count
+    }
+
+
+# ── GET STRESS TRENDS ─────────────────────────
+@router.get("/stress-trends")
+def get_stress_trends(authorization: Optional[str] = Header(None)):
+    user = get_user_from_token(authorization)
+    user_id = user.get("user_id")
+    
+    stress_logs = db["stress_logs"]
+    # Get the last 7 logs
+    logs = list(stress_logs.find(
+        {"user_id": user_id},
+        {"_id": 0, "user_id": 0}
+    ).sort("timestamp", -1).limit(7))
+    
+    # Reverse to make it chronological
+    logs.reverse()
+    
+    return {"trends": logs}
