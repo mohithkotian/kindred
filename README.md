@@ -25,35 +25,67 @@
 > Team **808 Imperium** secured **2nd Place** at **SRISHTI Hackathon 2026**  
 > under **Theme 03 — Tech for Healthcare & Well-Being**.
 
-Built during a 36-hour innovation sprint focused on solving real-world caregiver burnout and emotional wellness challenges using AI-powered passive stress detection.
+Built during a 36-hour innovation sprint focused on solving caregiver burnout and emotional wellness challenges using AI-powered passive stress detection.
 
 🔗 **Repository:**  
 https://github.com/SRISHTI-HACKATHON-2026/team-112
 
 ---
 
-# 📸 Hackathon Moments
+# 📸 Hackathon Journey
 
-### 🏅 Prize Ceremony
-
-| Team Award | Group Photo |
-|---|---|
-| ![](images/award1.jpg) | ![](images/team1.jpg) |
-
----
-
-### 🚀 Team Moments
-
-| Celebration | Final Ceremony |
-|---|---|
-| ![](images/team2.jpg) | ![](images/award2.jpg) |
-
----
-
-### 💻 Building During Hackathon
+## 🏅 Official Winning Moment
 
 <p align="center">
-  <img src="images/workspace.jpg" width="700"/>
+  <img src="/pic/5.jpeg" width="850"/>
+</p>
+
+<p align="center">
+Team 808 Imperium receiving the <b>2nd Prize Award</b> at SRISHTI Hackathon 2026.
+</p>
+
+---
+
+## 🎉 Team Celebration
+
+| Team Victory | Celebration Moment |
+|---|---|
+| ![](/pic/1.jpeg) | ![](/pic/2.jpeg) |
+
+<p align="center">
+Celebrating after presenting our solution and securing the win.
+</p>
+
+---
+
+## 💻 During the Hackathon
+
+<p align="center">
+  <img src="/pic/3.jpeg" width="850"/>
+</p>
+
+<p align="center">
+Focused development and testing during the 36-hour hackathon sprint.
+</p>
+
+---
+
+## 👥 Final Stage Moments
+
+| Stage Ceremony | Team Recognition |
+|---|---|
+| ![](/pic/4.jpeg) | ![](/pic/6.jpeg) |
+
+---
+
+## 🚀 Post-Win Energy
+
+<p align="center">
+  <img src="/pic/7.jpeg" width="850"/>
+</p>
+
+<p align="center">
+The moment after realizing all the hard work paid off.
 </p>
 
 ---
